@@ -4,6 +4,8 @@ import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
+import 'party_account_page.dart';
+
 void main() => runApp(const ShopManagerApp());
 
 class ShopManagerApp extends StatelessWidget {
@@ -372,7 +374,7 @@ class DashboardPage extends StatelessWidget {
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
                     const SizedBox(height: 8),
-                    const Text('• سجل كل بيع وشراء بدقة\n• راقب ديون العملاء والموردين\n• أضف الأصناف قبل تسجيل المبيعات\n• استخدم التقارير لتتبع الأداء اليومي'),
+                    const Text('• سجل كل بيع وشراء بدقة\n• راقب ديون العملاء والموردين\n• أضف الأصناف قبل تسجيل المبيعات\n• استخدم كشف الحساب من كل عميل ومورد'),
                   ],
                 ),
               ),
@@ -425,6 +427,7 @@ class _PartiesPageState extends State<PartiesPage> {
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (context, index) {
                     final party = parties[index];
+                    final id = party['id'] as int;
                     final name = party['name'] as String;
                     final phone = party['phone'] as String;
                     return ListTile(
@@ -435,6 +438,19 @@ class _PartiesPageState extends State<PartiesPage> {
                       ),
                       title: Text(name),
                       subtitle: Text(phone.isEmpty ? 'بدون رقم هاتف' : phone),
+                      trailing: const Icon(Icons.chevron_left),
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => PartyAccountPage(
+                              partyId: id,
+                              partyName: name,
+                              partyKind: widget.kind,
+                            ),
+                          ),
+                        );
+                      },
                     );
                   },
                 ),
@@ -491,7 +507,7 @@ class _ProductsPageState extends State<ProductsPage> {
                       leading: const CircleAvatar(child: Icon(Icons.inventory_2_outlined)),
                       title: Text(product['name'] as String),
                       subtitle: Text(
-                        'شراء: ${NumberFormat('#,##0.##').format(purchase)} • بيع: ${NumberFormat('#,##0.##').format(sale)} • الكمية: ${NumberFormat('#,##0.##').format(stock)}',
+                        'شراء: ${NumberFormat('#,##0.##').format(purchase)} ��� بيع: ${NumberFormat('#,##0.##').format(sale)} • الكمية: ${NumberFormat('#,##0.##').format(stock)}',
                       ),
                     );
                   },
@@ -1030,11 +1046,13 @@ Future<void> showPurchaseForm(BuildContext context) async {
                     return;
                   }
 
-                  final productName = ((await StoreDb.instance.listProducts()).firstWhere((row) => (row['id'] as int) == selectedProductId))['name'] as String;
-                  final partyName = ((await StoreDb.instance.listParties('مورد')).firstWhere((row) => (row['id'] as int) == selectedPartyId))['name'] as String;
+                  final productRow = (await StoreDb.instance.listProducts())
+                      .firstWhere((row) => (row['id'] as int) == selectedProductId);
                   final quantity = double.parse(quantityController.text);
                   final unitPrice = double.parse(unitPriceController.text);
                   final paid = double.parse(paidController.text.isEmpty ? '0' : paidController.text);
+
+                  final partyName = ((await StoreDb.instance.listParties('مورد')).firstWhere((row) => (row['id'] as int) == selectedPartyId))['name'] as String;
 
                   try {
                     await StoreDb.instance.addProductMovement(
@@ -1070,3 +1088,27 @@ Future<void> showPurchaseForm(BuildContext context) async {
   paidController.dispose();
   noteController.dispose();
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -88,12 +88,14 @@ class PartyAccountPage extends StatelessWidget {
                   final date = DateTime.tryParse(entry['created_at'] as String? ?? '');
                   final product = (entry['product_name'] as String?) ?? '';
                   final note = (entry['note'] as String?) ?? '';
+                  final productTitle = product.isEmpty ? _entryKind : '$_entryKind — $product';
+
                   return Card(
                     child: ListTile(
                       leading: CircleAvatar(
                         child: Icon(partyKind == 'عميل' ? Icons.point_of_sale : Icons.local_shipping_outlined),
                       ),
-                      title: Text(product.isEmpty ? _entryKind : '$ _entryKind — $product'.replaceFirst(r'$ ', '')),
+                      title: Text(productTitle),
                       subtitle: Text([
                         if (date != null) DateFormat('yyyy/MM/dd  HH:mm').format(date),
                         if (note.isNotEmpty) note,
