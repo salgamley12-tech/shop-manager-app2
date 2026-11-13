@@ -1,117 +1,670 @@
 import 'package:flutter/material.dart';
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart' as p;
 import 'package:intl/intl.dart';
+import 'package:path/path.dart' as p;
+import 'package:sqflite/sqflite.dart';
 
 void main() => runApp(const ShopManagerApp());
 
 class ShopManagerApp extends StatelessWidget {
   const ShopManagerApp({super.key});
+
   @override
-  Widget build(BuildContext context) => MaterialApp(
-        debugShowCheckedModeBanner: false,
-        title: 'مدير المحل',
-        theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff176b5b)), useMaterial3: true, fontFamily: 'Roboto'),
-        home: const HomePage(),
-      );
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'مدير المحل',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF176B5B)),
+      ),
+      home: const HomePage(),
+    );
+  }
 }
 
 class StoreDb {
   StoreDb._();
   static final StoreDb instance = StoreDb._();
+
   Database? _db;
+
   Future<Database> get db async {
     if (_db != null) return _db!;
     final path = p.join(await getDatabasesPath(), 'shop_manager.db');
-    _db = await openDatabase(path, version: 1, onCreate: (db, version) async {
-      await db.execute('CREATE TABLE parties(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT NOT NULL DEFAULT \'\', kind TEXT NOT NULL)');
-      await db.execute('CREATE TABLE entries(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, party_id INTEGER, party_name TEXT NOT NULL, amount REAL NOT NULL, paid REAL NOT NULL, note TEXT NOT NULL DEFAULT \'\', created_at TEXT NOT NULL)');
-    });
+    _db = await openDatabase(
+      path,
+      version: 2,
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
+    );
     return _db!;
   }
-  Future<List<Map<String, Object?>>> parties(String kind) async => (await db).query('parties', where: 'kind = ?', whereArgs: [kind], orderBy: 'name COLLATE NOCASE');
-  Future<void> addParty(String name, String phone, String kind) async => (await db).insert('parties', {'name': name.trim(), 'phone': phone.trim(), 'kind': kind});
-  Future<List<Map<String, Object?>>> entries() async => (await db).query('entries', orderBy: 'id DESC');
-  Future<void> addEntry({required String kind, required String name, int? partyId, required double amount, required double paid, required String note}) async => (await db).insert('entries', {'kind': kind, 'party_id': partyId, 'party_name': name, 'amount': amount, 'paid': paid, 'note': note, 'created_at': DateTime.now().toIso8601String()});
-  Future<List<Map<String, Object?>>> summary() async {
-    final d = await db;
-    final sales = await d.rawQuery("SELECT COALESCE(SUM(amount),0) total FROM entries WHERE kind='بيع'");
-    final purchases = await d.rawQuery("SELECT COALESCE(SUM(amount),0) total FROM entries WHERE kind='شراء'");
-    final dueCustomers = await d.rawQuery("SELECT COALESCE(SUM(amount-paid),0) total FROM entries WHERE kind='بيع'");
-    final dueSuppliers = await d.rawQuery("SELECT COALESCE(SUM(amount-paid),0) total FROM entries WHERE kind='شراء'");
-    return [sales.first, purchases.first, dueCustomers.first, dueSuppliers.first];
+
+  Future<void> _onCreate(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE parties (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        purchase_price REAL NOT NULL DEFAULT 0,
+        sale_price REAL NOT NULL DEFAULT 0,
+        stock REAL NOT NULL DEFAULT 0,
+        barcode TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        party_id INTEGER,
+        party_name TEXT NOT NULL,
+        amount REAL NOT NULL,
+        paid REAL NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      )
+    ''');
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS products (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          purchase_price REAL NOT NULL DEFAULT 0,
+          sale_price REAL NOT NULL DEFAULT 0,
+          stock REAL NOT NULL DEFAULT 0,
+          barcode TEXT NOT NULL DEFAULT ''
+        )
+      ''');
+    }
+  }
+
+  Future<List<Map<String, Object?>>> listParties(String kind) async {
+    final database = await db;
+    return database.query(
+      'parties',
+      where: 'kind = ?',
+      whereArgs: [kind],
+      orderBy: 'name COLLATE NOCASE',
+    );
+  }
+
+  Future<void> addParty(String name, String phone, String kind) async {
+    final database = await db;
+    await database.insert('parties', {
+      'name': name.trim(),
+      'phone': phone.trim(),
+      'kind': kind,
+    });
+  }
+
+  Future<List<Map<String, Object?>>> listProducts() async {
+    final database = await db;
+    return database.query('products', orderBy: 'name COLLATE NOCASE');
+  }
+
+  Future<void> addProduct({
+    required String name,
+    required double purchasePrice,
+    required double salePrice,
+    required double stock,
+    required String barcode,
+  }) async {
+    final database = await db;
+    await database.insert('products', {
+      'name': name.trim(),
+      'purchase_price': purchasePrice,
+      'sale_price': salePrice,
+      'stock': stock,
+      'barcode': barcode.trim(),
+    });
+  }
+
+  Future<void> addEntry({
+    required String kind,
+    required String partyName,
+    int? partyId,
+    required double amount,
+    required double paid,
+    String note = '',
+  }) async {
+    final database = await db;
+    await database.insert('entries', {
+      'kind': kind,
+      'party_id': partyId,
+      'party_name': partyName,
+      'amount': amount,
+      'paid': paid,
+      'note': note,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Future<List<Map<String, Object?>>> getEntries() async {
+    final database = await db;
+    return database.query('entries', orderBy: 'id DESC');
+  }
+
+  Future<List<Map<String, Object?>>> getSummary() async {
+    final database = await db;
+
+    final sales = await database.rawQuery(
+      "SELECT COALESCE(SUM(amount), 0) AS total FROM entries WHERE kind = 'بيع'",
+    );
+    final purchases = await database.rawQuery(
+      "SELECT COALESCE(SUM(amount), 0) AS total FROM entries WHERE kind = 'شراء'",
+    );
+    final dueCustomers = await database.rawQuery(
+      "SELECT COALESCE(SUM(amount - paid), 0) AS total FROM entries WHERE kind = 'بيع'",
+    );
+    final dueSuppliers = await database.rawQuery(
+      "SELECT COALESCE(SUM(amount - paid), 0) AS total FROM entries WHERE kind = 'شراء'",
+    );
+
+    return [
+      sales.first,
+      purchases.first,
+      dueCustomers.first,
+      dueSuppliers.first,
+    ];
   }
 }
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
+
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
-  int tab = 0;
-  int refresh = 0;
-  void reload() => setState(() => refresh++);
+  int _selectedIndex = 0;
+
   @override
   Widget build(BuildContext context) {
-    final pages = [Dashboard(key: ValueKey('d$refresh')), PartyPage(kind: 'عميل', key: ValueKey('c$refresh')), PartyPage(kind: 'مورد', key: ValueKey('s$refresh')), EntriesPage(key: ValueKey('e$refresh'))];
-    return Directionality(textDirection: TextDirection.rtl, child: Scaffold(
-      appBar: AppBar(title: const Text('مدير المحل'), centerTitle: true),
-      body: pages[tab],
-      floatingActionButton: tab == 3 ? FloatingActionButton.extended(onPressed: () async { await showEntryForm(context); reload(); }, icon: const Icon(Icons.add), label: const Text('حركة جديدة')) : null,
-      bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (i) => setState(() => tab = i), destinations: const [NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'الرئيسية'), NavigationDestination(icon: Icon(Icons.people_outline), label: 'العملاء'), NavigationDestination(icon: Icon(Icons.local_shipping_outlined), label: 'الموردون'), NavigationDestination(icon: Icon(Icons.receipt_long_outlined), label: 'الحركات')]),
-    ));
+    final pages = <Widget>[
+      const DashboardPage(),
+      const PartiesPage(kind: 'عميل'),
+      const PartiesPage(kind: 'مورد'),
+      const ProductsPage(),
+      const EntriesPage(),
+    ];
+
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('مدير المحل'),
+          centerTitle: true,
+        ),
+        body: pages[_selectedIndex],
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: _selectedIndex,
+          onDestinationSelected: (value) => setState(() => _selectedIndex = value),
+          destinations: const [
+            NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'الرئيسية'),
+            NavigationDestination(icon: Icon(Icons.people_outline), selectedIcon: Icon(Icons.people), label: 'العملاء'),
+            NavigationDestination(icon: Icon(Icons.local_shipping_outlined), selectedIcon: Icon(Icons.local_shipping), label: 'الموردون'),
+            NavigationDestination(icon: Icon(Icons.inventory_2_outlined), selectedIcon: Icon(Icons.inventory_2), label: 'المخزن'),
+            NavigationDestination(icon: Icon(Icons.receipt_long_outlined), selectedIcon: Icon(Icons.receipt_long), label: 'الحركات'),
+          ],
+        ),
+      ),
+    );
   }
 }
 
-class Dashboard extends StatelessWidget {
-  const Dashboard({super.key});
-  String money(Object? value) => '${NumberFormat('#,##0.##').format((value as num?) ?? 0)}';
+class DashboardPage extends StatelessWidget {
+  const DashboardPage({super.key});
+
+  String formatMoney(dynamic value) {
+    final numValue = (value is num) ? value : 0;
+    return NumberFormat('#,##0.##').format(numValue);
+  }
+
   @override
-  Widget build(BuildContext context) => FutureBuilder<List<Map<String, Object?>>>(future: StoreDb.instance.summary(), builder: (context, snap) {
-    if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-    final labels = ['إجمالي المبيعات', 'إجمالي المشتريات', 'ديون العملاء', 'مستحقات الموردين'];
-    final icons = [Icons.trending_up, Icons.shopping_bag_outlined, Icons.person_search, Icons.local_shipping];
-    return ListView(padding: const EdgeInsets.all(16), children: [Text('ملخص النشاط', style: Theme.of(context).textTheme.headlineSmall), const SizedBox(height: 12), GridView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: labels.length, gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, childAspectRatio: 1.35, crossAxisSpacing: 12, mainAxisSpacing: 12), itemBuilder: (_, i) => Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Icon(icons[i], color: Theme.of(context).colorScheme.primary), Text(labels[i]), Text(money(snap.data![i]['total']), style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold))]))))]);
-  });
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Map<String, Object?>>>(
+      future: StoreDb.instance.getSummary(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final data = snapshot.data!;
+        final cards = [
+          {'label': 'إجمالي المبيعات', 'value': data[0]['total'], 'icon': Icons.trending_up},
+          {'label': 'إجمالي المشتريات', 'value': data[1]['total'], 'icon': Icons.shopping_bag_outlined},
+          {'label': 'ديون العملاء', 'value': data[2]['total'], 'icon': Icons.person_outline},
+          {'label': 'مستحقات الموردين', 'value': data[3]['total'], 'icon': Icons.local_shipping_outlined},
+        ];
+
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Text(
+              'ملخص النشاط',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+            const SizedBox(height: 16),
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: cards.length,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+                childAspectRatio: 1.25,
+              ),
+              itemBuilder: (context, index) {
+                final card = cards[index];
+                return Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Icon(card['icon'] as IconData, color: Theme.of(context).colorScheme.primary),
+                        Text(card['label'] as String),
+                        Text(
+                          formatMoney(card['value']),
+                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 20),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'ملاحظات مهمة',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text('• سجل كل بيع وشراء بدقة\n• ر��قب ديون العملاء والموردين\n• أضف الأصناف قبل تسجيل المبيعات\n• استخدم التقارير لتتبع الأداء اليومي'),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
 }
 
-class PartyPage extends StatefulWidget {
-  const PartyPage({required this.kind, super.key});
+class PartiesPage extends StatefulWidget {
+  const PartiesPage({super.key, required this.kind});
   final String kind;
+
   @override
-  State<PartyPage> createState() => _PartyPageState();
+  State<PartiesPage> createState() => _PartiesPageState();
 }
-class _PartyPageState extends State<PartyPage> {
+
+class _PartiesPageState extends State<PartiesPage> {
   @override
-  Widget build(BuildContext context) => FutureBuilder<List<Map<String, Object?>>>(future: StoreDb.instance.parties(widget.kind), builder: (context, snap) {
-    if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-    final people = snap.data!;
-    return Scaffold(backgroundColor: Colors.transparent, floatingActionButton: FloatingActionButton(onPressed: () async { await showPartyForm(context, widget.kind); setState(() {}); }, child: const Icon(Icons.person_add_alt_1)), body: people.isEmpty ? Center(child: Text('لا يوجد ${widget.kind}ون بعد\nاضغط + لإضافة ${widget.kind}', textAlign: TextAlign.center)) : ListView.builder(itemCount: people.length, itemBuilder: (_, i) { final person = people[i]; return ListTile(leading: CircleAvatar(child: Icon(widget.kind == 'عميل' ? Icons.person : Icons.local_shipping)), title: Text(person['name'] as String), subtitle: Text((person['phone'] as String).isEmpty ? 'بدون رقم هاتف' : person['phone'] as String)); }));
-  });
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Map<String, Object?>>>(
+      future: StoreDb.instance.listParties(widget.kind),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final parties = snapshot.data!;
+
+        return Scaffold(
+          backgroundColor: Colors.transparent,
+          floatingActionButton: FloatingActionButton(
+            onPressed: () async {
+              await showPartyForm(context, widget.kind);
+              setState(() {});
+            },
+            child: const Icon(Icons.person_add_alt_1),
+          ),
+          body: parties.isEmpty
+              ? Center(
+                  child: Text(
+                    'لا يوجد ${widget.kind}ون بعد\nاضغط + لإضافة ${widget.kind}',
+                    textAlign: TextAlign.center,
+                  ),
+                )
+              : ListView.separated(
+                  itemCount: parties.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final party = parties[index];
+                    final name = party['name'] as String;
+                    final phone = party['phone'] as String;
+                    return ListTile(
+                      leading: CircleAvatar(
+                        child: Icon(
+                          widget.kind == 'عميل' ? Icons.person : Icons.local_shipping,
+                        ),
+                      ),
+                      title: Text(name),
+                      subtitle: Text(phone.isEmpty ? 'بدون رقم هاتف' : phone),
+                    );
+                  },
+                ),
+        );
+      },
+    );
+  }
+}
+
+class ProductsPage extends StatefulWidget {
+  const ProductsPage({super.key});
+
+  @override
+  State<ProductsPage> createState() => _ProductsPageState();
+}
+
+class _ProductsPageState extends State<ProductsPage> {
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Map<String, Object?>>>(
+      future: StoreDb.instance.listProducts(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final products = snapshot.data!;
+
+        return Scaffold(
+          backgroundColor: Colors.transparent,
+          floatingActionButton: FloatingActionButton(
+            onPressed: () async {
+              await showProductForm(context);
+              setState(() {});
+            },
+            child: const Icon(Icons.add_shopping_cart),
+          ),
+          body: products.isEmpty
+              ? const Center(
+                  child: Text(
+                    'لا توجد أصناف بعد\nاضغط + لإضافة منتج جديد',
+                    textAlign: TextAlign.center,
+                  ),
+                )
+              : ListView.separated(
+                  itemCount: products.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final product = products[index];
+                    final stock = (product['stock'] as num?) ?? 0;
+                    final purchase = (product['purchase_price'] as num?) ?? 0;
+                    final sale = (product['sale_price'] as num?) ?? 0;
+                    return ListTile(
+                      leading: const CircleAvatar(child: Icon(Icons.inventory_2_outlined)),
+                      title: Text(product['name'] as String),
+                      subtitle: Text(
+                        'شراء: ${NumberFormat('#,##0.##').format(purchase)} • بيع: ${NumberFormat('#,##0.##').format(sale)} • الكمية: ${NumberFormat('#,##0.##').format(stock)}',
+                      ),
+                    );
+                  },
+                ),
+        );
+      },
+    );
+  }
 }
 
 class EntriesPage extends StatelessWidget {
   const EntriesPage({super.key});
+
   @override
-  Widget build(BuildContext context) => FutureBuilder<List<Map<String, Object?>>>(future: StoreDb.instance.entries(), builder: (context, snap) {
-    if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-    final rows = snap.data!;
-    if (rows.isEmpty) return const Center(child: Text('لا توجد حركات مسجلة\nاستخدم زر «حركة جديدة» للبدء', textAlign: TextAlign.center));
-    return ListView.separated(padding: const EdgeInsets.only(bottom: 88), itemCount: rows.length, separatorBuilder: (_, __) => const Divider(height: 1), itemBuilder: (_, i) { final row = rows[i]; final kind = row['kind'] as String; final amount = row['amount'] as num; final paid = row['paid'] as num; final date = DateTime.tryParse(row['created_at'] as String); return ListTile(leading: CircleAvatar(child: Icon(kind == 'بيع' ? Icons.south_west : Icons.north_east)), title: Text('$kind — ${row['party_name']}'), subtitle: Text('${date == null ? '' : DateFormat('yyyy/MM/dd  HH:mm').format(date)}  •  مدفوع ${NumberFormat('#,##0.##').format(paid)}  •  متبقٍ ${NumberFormat('#,##0.##').format(amount - paid)}'), trailing: Text(NumberFormat('#,##0.##').format(amount), style: const TextStyle(fontWeight: FontWeight.bold))); });
-  });
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Map<String, Object?>>>(
+      future: StoreDb.instance.getEntries(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final entries = snapshot.data!;
+
+        if (entries.isEmpty) {
+          return const Center(
+            child: Text(
+              'لا توجد حركات مسجلة\nاضغط على زر + في شاشة الحركة لبدء السجل',
+              textAlign: TextAlign.center,
+            ),
+          );
+        }
+
+        return ListView.separated(
+          padding: const EdgeInsets.only(bottom: 90),
+          itemCount: entries.length,
+          separatorBuilder: (_, __) => const Divider(height: 1),
+          itemBuilder: (context, index) {
+            final entry = entries[index];
+            final kind = entry['kind'] as String;
+            final amount = (entry['amount'] as num?) ?? 0;
+            final paid = (entry['paid'] as num?) ?? 0;
+            final createdAt = DateTime.tryParse(entry['created_at'] as String) ?? DateTime.now();
+            final note = (entry['note'] as String?) ?? '';
+
+            return ListTile(
+              leading: CircleAvatar(
+                child: Icon(kind == 'بيع' ? Icons.south_west : Icons.north_east),
+              ),
+              title: Text('$kind — ${entry['party_name']}'),
+              subtitle: Text(
+                '${DateFormat('yyyy/MM/dd  HH:mm').format(createdAt)}${note.isEmpty ? '' : ' • $note'}',
+              ),
+              trailing: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    NumberFormat('#,##0.##').format(amount),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    'مدفوع: ${NumberFormat('#,##0.##').format(paid)}',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
 }
 
 Future<void> showPartyForm(BuildContext context, String kind) async {
-  final form = GlobalKey<FormState>(); final name = TextEditingController(); final phone = TextEditingController();
-  await showDialog<void>(context: context, builder: (ctx) => AlertDialog(title: Text('إضافة $kind'), content: Form(key: form, child: Column(mainAxisSize: MainAxisSize.min, children: [TextFormField(controller: name, autofocus: true, decoration: const InputDecoration(labelText: 'الاسم'), validator: (v) => v == null || v.trim().isEmpty ? 'أدخل الاسم' : null), TextFormField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم الهاتف (اختياري)'))])), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')), FilledButton(onPressed: () async { if (!form.currentState!.validate()) return; await StoreDb.instance.addParty(name.text, phone.text, kind); if (ctx.mounted) Navigator.pop(ctx); }, child: const Text('حفظ'))]));
-  name.dispose(); phone.dispose();
+  final formKey = GlobalKey<FormState>();
+  final nameController = TextEditingController();
+  final phoneController = TextEditingController();
+
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        title: Text('إضافة $kind'),
+        content: Form(
+          key: formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: nameController,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'الاسم'),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'أدخل الاسم';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: phoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(labelText: 'رقم الهاتف (اختياري)'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (!formKey.currentState!.validate()) return;
+              await StoreDb.instance.addParty(
+                nameController.text,
+                phoneController.text,
+                kind,
+              );
+              if (context.mounted) Navigator.pop(dialogContext);
+            },
+            child: const Text('حفظ'),
+          ),
+        ],
+      );
+    },
+  );
+
+  nameController.dispose();
+  phoneController.dispose();
 }
 
-Future<void> showEntryForm(BuildContext context) async {
-  final form = GlobalKey<FormState>(); final amount = TextEditingController(); final paid = TextEditingController(text: '0'); final note = TextEditingController();
-  String kind = 'بيع'; int? partyId; String partyName = 'زبون نقدي';
-  await showDialog<void>(context: context, builder: (ctx) => StatefulBuilder(builder: (ctx, setDialog) => AlertDialog(title: const Text('تسجيل حركة'), content: Form(key: form, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [DropdownButtonFormField<String>(value: kind, decoration: const InputDecoration(labelText: 'نوع الحركة'), items: const [DropdownMenuItem(value: 'بيع', child: Text('بيع')), DropdownMenuItem(value: 'شراء', child: Text('شراء'))], onChanged: (v) { if (v != null) setDialog(() { kind = v; partyId = null; partyName = v == 'بيع' ? 'زبون نقدي' : 'مورد نقدي'; }); }), FutureBuilder<List<Map<String, Object?>>>(future: StoreDb.instance.parties(kind == 'بيع' ? 'عميل' : 'مورد'), builder: (_, snap) { final list = snap.data ?? []; return DropdownButtonFormField<int?>(value: partyId, decoration: InputDecoration(labelText: kind == 'بيع' ? 'العميل (اختياري)' : 'المورد (اختياري)'), items: [const DropdownMenuItem<int?>(value: null, child: Text('نقدي / غير محدد')), ...list.map((x) => DropdownMenuItem<int?>(value: x['id'] as int, child: Text(x['name'] as String)))], onChanged: (v) => setDialog(() { partyId = v; if (v != null) partyName = list.firstWhere((x) => x['id'] == v)['name'] as String; else partyName = kind == 'بيع' ? 'زبون نقدي' : 'مورد نقدي'; })); }), TextFormField(controller: amount, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'المبلغ الإجمالي'), validator: (v) => (double.tryParse(v ?? '') ?? 0) <= 0 ? 'أدخل مبلغًا صحيحًا' : null), TextFormField(controller: paid, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'المبلغ المدفوع'), validator: (v) { final a = double.tryParse(amount.text) ?? 0; final b = double.tryParse(v ?? '') ?? -1; return b < 0 || b > a ? 'تحقق من المبلغ المدفوع' : null; }), TextFormField(controller: note, decoration: const InputDecoration(labelText: 'ملاحظة (اختياري)'))]))), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')), FilledButton(onPressed: () async { if (!form.currentState!.validate()) return; await StoreDb.instance.addEntry(kind: kind, name: partyName, partyId: partyId, amount: double.parse(amount.text), paid: double.parse(paid.text.isEmpty ? '0' : paid.text), note: note.text.trim()); if (ctx.mounted) Navigator.pop(ctx); }, child: const Text('حفظ'))])));
-  amount.dispose(); paid.dispose(); note.dispose();
+Future<void> showProductForm(BuildContext context) async {
+  final formKey = GlobalKey<FormState>();
+  final nameController = TextEditingController();
+  final purchaseController = TextEditingController();
+  final saleController = TextEditingController();
+  final stockController = TextEditingController();
+  final barcodeController = TextEditingController();
+
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        title: const Text('إضافة صنف جديد'),
+        content: Form(
+          key: formKey,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: nameController,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'اسم الصنف'),
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'أدخل اسم الصنف';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: purchaseController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'سعر الشراء'),
+                  validator: (value) {
+                    if ((double.tryParse(value ?? '') ?? 0) < 0) {
+                      return 'أدخل سعر شراء صحيح';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: saleController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'سعر البيع'),
+                  validator: (value) {
+                    if ((double.tryParse(value ?? '') ?? 0) < 0) {
+                      return 'أدخل سعر بيع صحيح';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: stockController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'الكمية الحالية'),
+                  validator: (value) {
+                    if ((double.tryParse(value ?? '') ?? 0) < 0) {
+                      return 'أدخل كمية صحيحة';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: barcodeController,
+                  decoration: const InputDecoration(labelText: 'باركود (اختياري)'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (!formKey.currentState!.validate()) return;
+
+              await StoreDb.instance.addProduct(
+                name: nameController.text,
+                purchasePrice: double.parse(purchaseController.text),
+                salePrice: double.parse(saleController.text),
+                stock: double.parse(stockController.text),
+                barcode: barcodeController.text,
+              );
+
+              if (context.mounted) Navigator.pop(dialogContext);
+            },
+            child: const Text('حفظ'),
+          ),
+        ],
+      );
+    },
+  );
+
+  nameController.dispose();
+  purchaseController.dispose();
+  saleController.dispose();
+  stockController.dispose();
+  barcodeController.dispose();
 }
+
+// Reminder: next step can add a dedicated sale entry form tied to products and a stock update routine.
