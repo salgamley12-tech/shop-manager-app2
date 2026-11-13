@@ -33,7 +33,7 @@ class StoreDb {
     final path = p.join(await getDatabasesPath(), 'shop_manager.db');
     _db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -67,6 +67,10 @@ class StoreDb {
         kind TEXT NOT NULL,
         party_id INTEGER,
         party_name TEXT NOT NULL,
+        product_id INTEGER,
+        product_name TEXT NOT NULL DEFAULT '',
+        quantity REAL NOT NULL DEFAULT 0,
+        unit_price REAL NOT NULL DEFAULT 0,
         amount REAL NOT NULL,
         paid REAL NOT NULL,
         note TEXT NOT NULL DEFAULT '',
@@ -87,6 +91,23 @@ class StoreDb {
           barcode TEXT NOT NULL DEFAULT ''
         )
       ''');
+    }
+
+    if (oldVersion < 3) {
+      final info = await db.rawQuery('PRAGMA table_info(entries)');
+      final columns = info.map((e) => e['name'] as String).toList();
+      if (!columns.contains('product_id')) {
+        await db.execute('ALTER TABLE entries ADD COLUMN product_id INTEGER');
+      }
+      if (!columns.contains('product_name')) {
+        await db.execute("ALTER TABLE entries ADD COLUMN product_name TEXT NOT NULL DEFAULT ''");
+      }
+      if (!columns.contains('quantity')) {
+        await db.execute('ALTER TABLE entries ADD COLUMN quantity REAL NOT NULL DEFAULT 0');
+      }
+      if (!columns.contains('unit_price')) {
+        await db.execute('ALTER TABLE entries ADD COLUMN unit_price REAL NOT NULL DEFAULT 0');
+      }
     }
   }
 
@@ -131,23 +152,53 @@ class StoreDb {
     });
   }
 
-  Future<void> addEntry({
+  Future<void> addProductMovement({
     required String kind,
+    required int productId,
+    required int? partyId,
     required String partyName,
-    int? partyId,
-    required double amount,
+    required double quantity,
+    required double unitPrice,
     required double paid,
     String note = '',
   }) async {
     final database = await db;
-    await database.insert('entries', {
-      'kind': kind,
-      'party_id': partyId,
-      'party_name': partyName,
-      'amount': amount,
-      'paid': paid,
-      'note': note,
-      'created_at': DateTime.now().toIso8601String(),
+    final productRow = (await database.query(
+      'products',
+      where: 'id = ?',
+      whereArgs: [productId],
+      limit: 1,
+    )).first;
+
+    final currentStock = (productRow['stock'] as num?) ?? 0;
+    final newStock = kind == 'بيع' ? currentStock - quantity : currentStock + quantity;
+
+    if (newStock < 0) {
+      throw Exception('الكمية المطلوبة أكبر من المخزون الحالي');
+    }
+
+    await database.transaction((txn) async {
+      final totalAmount = quantity * unitPrice;
+      await txn.insert('entries', {
+        'kind': kind,
+        'party_id': partyId,
+        'party_name': partyName,
+        'product_id': productId,
+        'product_name': productRow['name'],
+        'quantity': quantity,
+        'unit_price': unitPrice,
+        'amount': totalAmount,
+        'paid': paid,
+        'note': note,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+
+      await txn.update(
+        'products',
+        {'stock': newStock},
+        where: 'id = ?',
+        whereArgs: [productId],
+      );
     });
   }
 
@@ -207,6 +258,23 @@ class _HomePageState extends State<HomePage> {
         appBar: AppBar(
           title: const Text('مدير المحل'),
           centerTitle: true,
+          actions: [
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.add_circle_outline),
+              onSelected: (value) async {
+                if (value == 'sale') {
+                  await showSaleForm(context);
+                } else if (value == 'purchase') {
+                  await showPurchaseForm(context);
+                }
+                if (mounted) setState(() {});
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(value: 'sale', child: Text('بيع جديد')),
+                PopupMenuItem(value: 'purchase', child: Text('شراء جديد')),
+              ],
+            ),
+          ],
         ),
         body: pages[_selectedIndex],
         bottomNavigationBar: NavigationBar(
@@ -303,7 +371,7 @@ class DashboardPage extends StatelessWidget {
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
                     const SizedBox(height: 8),
-                    const Text('• سجل كل بيع وشراء بدقة\n• ر��قب ديون العملاء والموردين\n• أضف الأصناف قبل تسجيل المبيعات\n• استخدم التقارير لتتبع الأداء اليومي'),
+                    const Text('• سجل كل بيع وشراء بدقة\n• راقب ديون العملاء والموردين\n• أضف الأصناف قبل تسجيل المبيعات\n• استخدم التقارير لتتبع الأداء اليومي'),
                   ],
                 ),
               ),
@@ -340,7 +408,7 @@ class _PartiesPageState extends State<PartiesPage> {
           floatingActionButton: FloatingActionButton(
             onPressed: () async {
               await showPartyForm(context, widget.kind);
-              setState(() {});
+              if (mounted) setState(() {});
             },
             child: const Icon(Icons.person_add_alt_1),
           ),
@@ -399,7 +467,7 @@ class _ProductsPageState extends State<ProductsPage> {
           floatingActionButton: FloatingActionButton(
             onPressed: () async {
               await showProductForm(context);
-              setState(() {});
+              if (mounted) setState(() {});
             },
             child: const Icon(Icons.add_shopping_cart),
           ),
@@ -450,7 +518,7 @@ class EntriesPage extends StatelessWidget {
         if (entries.isEmpty) {
           return const Center(
             child: Text(
-              'لا توجد حركات مسجلة\nاضغط على زر + في شاشة الحركة لبدء السجل',
+              'لا توجد حركات مسجلة\nاضغط على زر + في الأعلى لبدء السجل',
               textAlign: TextAlign.center,
             ),
           );
@@ -467,6 +535,7 @@ class EntriesPage extends StatelessWidget {
             final paid = (entry['paid'] as num?) ?? 0;
             final createdAt = DateTime.tryParse(entry['created_at'] as String) ?? DateTime.now();
             final note = (entry['note'] as String?) ?? '';
+            final productName = (entry['product_name'] as String?) ?? '';
 
             return ListTile(
               leading: CircleAvatar(
@@ -474,7 +543,7 @@ class EntriesPage extends StatelessWidget {
               ),
               title: Text('$kind — ${entry['party_name']}'),
               subtitle: Text(
-                '${DateFormat('yyyy/MM/dd  HH:mm').format(createdAt)}${note.isEmpty ? '' : ' • $note'}',
+                '${DateFormat('yyyy/MM/dd  HH:mm').format(createdAt)}${productName.isEmpty ? '' : ' • $productName'}${note.isEmpty ? '' : ' • $note'}',
               ),
               trailing: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -667,4 +736,336 @@ Future<void> showProductForm(BuildContext context) async {
   barcodeController.dispose();
 }
 
-// Reminder: next step can add a dedicated sale entry form tied to products and a stock update routine.
+Future<void> showSaleForm(BuildContext context) async {
+  final formKey = GlobalKey<FormState>();
+  final quantityController = TextEditingController(text: '1');
+  final unitPriceController = TextEditingController();
+  final paidController = TextEditingController();
+  final noteController = TextEditingController();
+
+  int? selectedPartyId;
+  int? selectedProductId;
+
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) {
+      return StatefulBuilder(
+        builder: (stateContext, setDialogState) {
+          return AlertDialog(
+            title: const Text('بيع جديد'),
+            content: Form(
+              key: formKey,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FutureBuilder<List<Map<String, Object?>>>(
+                      future: StoreDb.instance.listParties('عميل'),
+                      builder: (context, snapshot) {
+                        final items = snapshot.data ?? const [];
+                        return DropdownButtonFormField<int>(
+                          value: selectedPartyId,
+                          decoration: const InputDecoration(labelText: 'العميل'),
+                          items: [
+                            const DropdownMenuItem<int>(value: -1, child: Text('اختر عميل')),
+                            ...items.map((e) => DropdownMenuItem<int>(
+                              value: (e['id'] as int),
+                              child: Text(e['name'] as String),
+                            )),
+                          ],
+                          onChanged: (value) => setDialogState(() => selectedPartyId = value == -1 ? null : value),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    FutureBuilder<List<Map<String, Object?>>>(
+                      future: StoreDb.instance.listProducts(),
+                      builder: (context, snapshot) {
+                        final items = snapshot.data ?? const [];
+                        return DropdownButtonFormField<int>(
+                          value: selectedProductId,
+                          decoration: const InputDecoration(labelText: 'الصنف'),
+                          items: [
+                            const DropdownMenuItem<int>(value: -1, child: Text('اختر صنف')),
+                            ...items.map((e) => DropdownMenuItem<int>(
+                              value: (e['id'] as int),
+                              child: Text(e['name'] as String),
+                            )),
+                          ],
+                          onChanged: (value) {
+                            setDialogState(() {
+                              selectedProductId = value == -1 ? null : value;
+                              if (selectedProductId != null) {
+                                final product = items.firstWhere((item) => (item['id'] as int) == selectedProductId);
+                                unitPriceController.text = ((product['sale_price'] as num?) ?? 0).toString();
+                              }
+                            });
+                          },
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: quantityController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'الكمية'),
+                      validator: (value) {
+                        final parsed = double.tryParse(value ?? '') ?? 0;
+                        return parsed > 0 ? null : 'أدخل كمية صحيحة';
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: unitPriceController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'سعر الوحدة'),
+                      validator: (value) {
+                        final parsed = double.tryParse(value ?? '') ?? 0;
+                        return parsed >= 0 ? null : 'أدخل سعر صحيح';
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: paidController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'المبلغ المدفوع'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: noteController,
+                      decoration: const InputDecoration(labelText: 'ملاحظة (اختياري)'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('إلغاء')),
+              FilledButton(
+                onPressed: () async {
+                  if (!formKey.currentState!.validate()) return;
+                  if (selectedPartyId == null || selectedPartyId == -1) {
+                    ScaffoldMessenger.of(dialogContext).showSnackBar(
+                      const SnackBar(content: Text('اختَر عميلًا أولاً')),
+                    );
+                    return;
+                  }
+                  if (selectedProductId == null || selectedProductId == -1) {
+                    ScaffoldMessenger.of(dialogContext).showSnackBar(
+                      const SnackBar(content: Text('اختَر صنفًا أولاً')),
+                    );
+                    return;
+                  }
+
+                  final productRow = (await StoreDb.instance.listProducts())
+                      .firstWhere((row) => (row['id'] as int) == selectedProductId);
+                  final stock = (productRow['stock'] as num?) ?? 0;
+                  final quantity = double.parse(quantityController.text);
+                  final unitPrice = double.parse(unitPriceController.text);
+                  final paid = double.parse(paidController.text.isEmpty ? '0' : paidController.text);
+
+                  if (quantity > stock) {
+                    ScaffoldMessenger.of(dialogContext).showSnackBar(
+                      const SnackBar(content: Text('الكمية المطلوبة أكبر من المخزون')),
+                    );
+                    return;
+                  }
+
+                  final partyName = ((await StoreDb.instance.listParties('عميل')).firstWhere((row) => (row['id'] as int) == selectedPartyId))['name'] as String;
+
+                  try {
+                    await StoreDb.instance.addProductMovement(
+                      kind: 'بيع',
+                      productId: selectedProductId!,
+                      partyId: selectedPartyId,
+                      partyName: partyName,
+                      quantity: quantity,
+                      unitPrice: unitPrice,
+                      paid: paid,
+                      note: noteController.text,
+                    );
+                    if (context.mounted) Navigator.pop(dialogContext);
+                  } catch (error) {
+                    if (dialogContext.mounted) {
+                      ScaffoldMessenger.of(dialogContext).showSnackBar(
+                        SnackBar(content: Text(error.toString())),
+                      );
+                    }
+                  }
+                },
+                child: const Text('حفظ'),
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+
+  quantityController.dispose();
+  unitPriceController.dispose();
+  paidController.dispose();
+  noteController.dispose();
+}
+
+Future<void> showPurchaseForm(BuildContext context) async {
+  final formKey = GlobalKey<FormState>();
+  final quantityController = TextEditingController(text: '1');
+  final unitPriceController = TextEditingController();
+  final paidController = TextEditingController();
+  final noteController = TextEditingController();
+
+  int? selectedPartyId;
+  int? selectedProductId;
+
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) {
+      return StatefulBuilder(
+        builder: (stateContext, setDialogState) {
+          return AlertDialog(
+            title: const Text('شراء جديد'),
+            content: Form(
+              key: formKey,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FutureBuilder<List<Map<String, Object?>>>(
+                      future: StoreDb.instance.listParties('مورد'),
+                      builder: (context, snapshot) {
+                        final items = snapshot.data ?? const [];
+                        return DropdownButtonFormField<int>(
+                          value: selectedPartyId,
+                          decoration: const InputDecoration(labelText: 'المورد'),
+                          items: [
+                            const DropdownMenuItem<int>(value: -1, child: Text('اختر مورد')),
+                            ...items.map((e) => DropdownMenuItem<int>(
+                              value: (e['id'] as int),
+                              child: Text(e['name'] as String),
+                            )),
+                          ],
+                          onChanged: (value) => setDialogState(() => selectedPartyId = value == -1 ? null : value),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    FutureBuilder<List<Map<String, Object?>>>(
+                      future: StoreDb.instance.listProducts(),
+                      builder: (context, snapshot) {
+                        final items = snapshot.data ?? const [];
+                        return DropdownButtonFormField<int>(
+                          value: selectedProductId,
+                          decoration: const InputDecoration(labelText: 'الصنف'),
+                          items: [
+                            const DropdownMenuItem<int>(value: -1, child: Text('اختر صنف')),
+                            ...items.map((e) => DropdownMenuItem<int>(
+                              value: (e['id'] as int),
+                              child: Text(e['name'] as String),
+                            )),
+                          ],
+                          onChanged: (value) {
+                            setDialogState(() {
+                              selectedProductId = value == -1 ? null : value;
+                              if (selectedProductId != null) {
+                                final product = items.firstWhere((item) => (item['id'] as int) == selectedProductId);
+                                unitPriceController.text = ((product['purchase_price'] as num?) ?? 0).toString();
+                              }
+                            });
+                          },
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: quantityController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'الكمية'),
+                      validator: (value) {
+                        final parsed = double.tryParse(value ?? '') ?? 0;
+                        return parsed > 0 ? null : 'أدخل كمية صحيحة';
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: unitPriceController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'سعر الوحدة'),
+                      validator: (value) {
+                        final parsed = double.tryParse(value ?? '') ?? 0;
+                        return parsed >= 0 ? null : 'أدخل سعر صحيح';
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: paidController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'المبلغ المدفوع'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: noteController,
+                      decoration: const InputDecoration(labelText: 'ملاحظة (اختياري)'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('إلغاء')),
+              FilledButton(
+                onPressed: () async {
+                  if (!formKey.currentState!.validate()) return;
+                  if (selectedPartyId == null || selectedPartyId == -1) {
+                    ScaffoldMessenger.of(dialogContext).showSnackBar(
+                      const SnackBar(content: Text('اختَر موردًا أولاً')),
+                    );
+                    return;
+                  }
+                  if (selectedProductId == null || selectedProductId == -1) {
+                    ScaffoldMessenger.of(dialogContext).showSnackBar(
+                      const SnackBar(content: Text('اختَر صنفًا أولاً')),
+                    );
+                    return;
+                  }
+
+                  final productName = ((await StoreDb.instance.listProducts()).firstWhere((row) => (row['id'] as int) == selectedProductId))['name'] as String;
+                  final partyName = ((await StoreDb.instance.listParties('مورد')).firstWhere((row) => (row['id'] as int) == selectedPartyId))['name'] as String;
+                  final quantity = double.parse(quantityController.text);
+                  final unitPrice = double.parse(unitPriceController.text);
+                  final paid = double.parse(paidController.text.isEmpty ? '0' : paidController.text);
+
+                  try {
+                    await StoreDb.instance.addProductMovement(
+                      kind: 'شراء',
+                      productId: selectedProductId!,
+                      partyId: selectedPartyId,
+                      partyName: partyName,
+                      quantity: quantity,
+                      unitPrice: unitPrice,
+                      paid: paid,
+                      note: noteController.text,
+                    );
+                    if (context.mounted) Navigator.pop(dialogContext);
+                  } catch (error) {
+                    if (dialogContext.mounted) {
+                      ScaffoldMessenger.of(dialogContext).showSnackBar(
+                        SnackBar(content: Text(error.toString())),
+                      );
+                    }
+                  }
+                },
+                child: const Text('حفظ'),
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+
+  quantityController.dispose();
+  unitPriceController.dispose();
+  paidController.dispose();
+  noteController.dispose();
+}
